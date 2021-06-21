@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -19,7 +20,6 @@ import com.amazonaws.services.timestreamwrite.AmazonTimestreamWrite;
 import com.amazonaws.services.timestreamwrite.model.AmazonTimestreamWriteException;
 import com.amazonaws.services.timestreamwrite.model.Dimension;
 import com.amazonaws.services.timestreamwrite.model.Record;
-import com.amazonaws.services.timestreamwrite.model.RejectedRecord;
 import com.amazonaws.services.timestreamwrite.model.RejectedRecordsException;
 import com.amazonaws.services.timestreamwrite.model.TimeUnit;
 import com.amazonaws.services.timestreamwrite.model.WriteRecordsRequest;
@@ -33,14 +33,17 @@ public class CsvIngestionExample {
     private final AmazonTimestreamWrite amazonTimestreamWrite;
     private final ExecutorService executorService;
     private static final long KEEP_ALIVE_TIME_IN_MINUTES = 10;
+    private static final String DIM = "dim";
+    private long durationInMinutes;
     private long threadCount;
 
     private long ingested;
     private long rejected;
 
-    public CsvIngestionExample(AmazonTimestreamWrite amazonTimestreamWrite, int threadCount) {
+    public CsvIngestionExample(AmazonTimestreamWrite amazonTimestreamWrite, int threadCount, long durationInMinutes) {
         this.amazonTimestreamWrite = amazonTimestreamWrite;
         this.threadCount = threadCount;
+        this.durationInMinutes = durationInMinutes;
         this.executorService = new ThreadPoolExecutor(
             threadCount,
             threadCount,
@@ -72,9 +75,6 @@ public class CsvIngestionExample {
                 dimensions.add(new Dimension().withName(columns[4]).withValue(columns[5]));
 
                 // override the value on the file to get an ingestion that is around current time
-                // Replicate a single line into 100 records.
-
-
                 Record record = new Record()
                                     .withDimensions(dimensions)
                                     .withTimeUnit(TimeUnit.MILLISECONDS)
@@ -85,7 +85,7 @@ public class CsvIngestionExample {
                 records.add(record);
                 counter++;
 
-                if (counter == threadCount * 100) {
+                if (counter == 100000) {
                     break;
                 }
             }
@@ -94,12 +94,25 @@ public class CsvIngestionExample {
         } finally {
             reader.close();
         }
-        for ( int i = 0; i< 10; i++) {
-            // Submit records using multiple threads
-            records = records.stream().peek(record -> {record.setTime(String.valueOf(Instant.now().toEpochMilli()));
-            }).collect(Collectors.toList());
+
+        System.out.println("Begin ingestion for " + durationInMinutes + " minutes.");
+        for (long stop=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(durationInMinutes * 60);stop>System.nanoTime();) {
+            /*
+             * Hammer the JVM with junk
+             * Submit records using multiple threads
+             */
+            records = resetRecordTimes(records);
             submitBatch(records);
         }
+        System.out.println("Time is up !!!!");
+    }
+
+    private List<Record> resetRecordTimes(List<Record> records) {
+        Random r = new Random();
+
+        return records.stream()
+                      .peek(record -> record.setTime(String.valueOf(Instant.now().toEpochMilli() + r.nextInt(100000))))
+                      .collect(Collectors.toList());
     }
 
     private void submitBatch(List<Record> recordBatches) {
@@ -108,26 +121,28 @@ public class CsvIngestionExample {
             // Convert record batches to WR and submit them
             Map<Integer, Future<WriteRecordsResult>> futures = new HashMap<>(recordBatches.size());
             int count = 0;
-            for (int i = 0; i< recordBatches.size(); i = i+ 100) {
+            for (int i = 0; i < recordBatches.size(); i = i + 100) {
                 WriteRecordsRequest writeRecordsRequest = new WriteRecordsRequest()
                                                               .withDatabaseName(DATABASE_NAME)
                                                               .withTableName(TABLE_NAME)
-                    .withRecords(recordBatches.subList(i, Math.min(i + 100, recordBatches.size())));
+                                                              .withRecords(recordBatches.subList(i, Math.min(i + 100,
+                                                                  recordBatches.size())));
                 futures.put(i, write(writeRecordsRequest));
                 count++;
                 // Wait for WR requests to complete
                 if (count % this.threadCount == 0) {
                     waitForCompletion(futures);
-                    System.out.printf("Ingested [%d] Rejected [%d] in [%d] seconds%n", ingested,
+                    System.out.printf("Ingested [%d] Rejected [%d] in [%d] milliseconds.%n", ingested,
                         rejected, Instant.now().toEpochMilli() - start.toEpochMilli());
                     count = 0;
+                    ingested = 0;
+                    rejected = 0;
+                    start = Instant.now();
                 }
             }
 
-
         } finally {
-            System.out.printf("Ingested [%d] Rejected [%d] in [%d] seconds%n", ingested,
-                rejected, Instant.now().toEpochMilli() - start.toEpochMilli());
+            // pass
         }
 
 
@@ -149,7 +164,6 @@ public class CsvIngestionExample {
                 resultsFuture.get();
                 ingested += 100;
             } catch (Exception e) {
-                e.printStackTrace();
                 if (e instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 } else if (e instanceof ExecutionException) {
@@ -159,10 +173,6 @@ public class CsvIngestionExample {
                         RejectedRecordsException rre = (RejectedRecordsException) unwrappedException;
                         ingested += 100 - rre.getRejectedRecords().size();
                         rejected += rre.getRejectedRecords().size();
-
-                        for (RejectedRecord r :rre.getRejectedRecords()) {
-                            System.out.println(r.getReason());
-                        }
 
                     } else if (unwrappedException instanceof AmazonTimestreamWriteException) {
                         AmazonTimestreamWriteException tswe = (AmazonTimestreamWriteException) unwrappedException;

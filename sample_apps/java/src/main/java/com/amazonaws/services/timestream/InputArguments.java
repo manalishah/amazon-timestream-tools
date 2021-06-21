@@ -13,4 +13,7 @@ public class InputArguments {
     @Option(name = "--threadCount", aliases = "-t", usage = "thread count for concurrency")
     public int threadCount;
 
+    @Option(name = "--durationInMinutes", aliases = "-d", usage = "Duration in minutes for the script to ingest.")
+    public int durationInMnutes;
+
 }

@@ -21,9 +21,10 @@ public class Main {
         AmazonTimestreamWrite writeClient = buildWriteClient();
         final AmazonTimestreamQuery queryClient = buildQueryClient();
         int threadCount = inputArguments.threadCount != 0 ? inputArguments.threadCount : DEFAULT_THREADS;
+        int durationInMinutes = inputArguments.durationInMnutes;
 
         CrudAndSimpleIngestionExample crudAndSimpleIngestionExample = new CrudAndSimpleIngestionExample(writeClient);
-        CsvIngestionExample csvIngestionExample = new CsvIngestionExample(writeClient, threadCount);
+        CsvIngestionExample csvIngestionExample = new CsvIngestionExample(writeClient, threadCount, durationInMinutes);
         QueryExample queryExample = new QueryExample(queryClient);
 
         crudAndSimpleIngestionExample.createDatabase();
