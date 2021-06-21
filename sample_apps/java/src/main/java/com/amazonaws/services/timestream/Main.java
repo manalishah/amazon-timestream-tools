@@ -49,7 +49,7 @@ public class Main {
 //        queryExample.runQueryWithMultiplePages(20000);
 
         // Cleanup commented out
-         //crudAndSimpleIngestionExample.deleteTable();
+         crudAndSimpleIngestionExample.deleteTable();
         // crudAndSimpleIngestionExample.deleteDatabase();
 
         System.exit(0);

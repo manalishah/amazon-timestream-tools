@@ -13,6 +13,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.stream.Collectors;
 
 import com.amazonaws.services.timestreamwrite.AmazonTimestreamWrite;
 import com.amazonaws.services.timestreamwrite.model.AmazonTimestreamWriteException;
@@ -51,10 +52,12 @@ public class CsvIngestionExample {
 
     public void bulkWriteRecords(String csvFilePath) throws IOException {
         BufferedReader reader = new BufferedReader(new FileReader(csvFilePath));
+        List<Record> records = new ArrayList<>();
+
         try {
 
-            Map<Integer, List<Record>> recordBatches = new HashMap<>();
             int counter = 0;
+            // Convert record batches to WR and submit them
 
             while (true) {
                 String line = reader.readLine();
@@ -70,46 +73,47 @@ public class CsvIngestionExample {
 
                 // override the value on the file to get an ingestion that is around current time
                 // Replicate a single line into 100 records.
-                List<Record> records = new ArrayList<>();
-                for (int i = 0; i< 100; i++) {
-                    Record record = new Record()
-                                        .withDimensions(dimensions)
-                                        .withTimeUnit(TimeUnit.MILLISECONDS)
-                                        .withMeasureName(columns[6])
-                                        .withMeasureValue(columns[7])
-                                        .withMeasureValueType(columns[8])
-                                        .withTime(String.valueOf(Instant.now().toEpochMilli()));
 
-                    records.add(record);
-                }
-                recordBatches.put(counter, records);
+
+                Record record = new Record()
+                                    .withDimensions(dimensions)
+                                    .withTimeUnit(TimeUnit.MILLISECONDS)
+                                    .withMeasureName(columns[6])
+                                    .withMeasureValue(columns[7])
+                                    .withMeasureValueType(columns[8])
+                                    .withTime(String.valueOf(Instant.now().toEpochMilli() - counter * 50L) );
+                records.add(record);
                 counter++;
+
+                if (counter == threadCount * 100) {
+                    break;
+                }
             }
-
-            System.out.printf("Completed parsing batches [%d].", counter);
-
-            // Submit records using multiple threads
-
-            submitBatch(recordBatches);
-
+            System.out.printf("Completed parsing records [%d]. \n", counter);
 
         } finally {
             reader.close();
         }
+        for ( int i = 0; i< 10; i++) {
+            // Submit records using multiple threads
+            records = records.stream().peek(record -> {record.setTime(String.valueOf(Instant.now().toEpochMilli()));
+            }).collect(Collectors.toList());
+            submitBatch(records);
+        }
     }
 
-    private void submitBatch(Map<Integer, List<Record>> recordBatches) {
+    private void submitBatch(List<Record> recordBatches) {
         Instant start = Instant.now();
         try {
             // Convert record batches to WR and submit them
             Map<Integer, Future<WriteRecordsResult>> futures = new HashMap<>(recordBatches.size());
             int count = 0;
-            for (int batch: recordBatches.keySet()) {
+            for (int i = 0; i< recordBatches.size(); i = i+ 100) {
                 WriteRecordsRequest writeRecordsRequest = new WriteRecordsRequest()
                                                               .withDatabaseName(DATABASE_NAME)
                                                               .withTableName(TABLE_NAME)
-                    .withRecords(recordBatches.get(batch));
-                futures.put(batch, write(writeRecordsRequest));
+                    .withRecords(recordBatches.subList(i, Math.min(i + 100, recordBatches.size())));
+                futures.put(i, write(writeRecordsRequest));
                 count++;
                 // Wait for WR requests to complete
                 if (count % this.threadCount == 0) {
