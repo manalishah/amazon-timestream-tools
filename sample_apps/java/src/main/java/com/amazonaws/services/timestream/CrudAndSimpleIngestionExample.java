@@ -7,6 +7,7 @@ import com.amazonaws.services.timestreamwrite.AmazonTimestreamWrite;
 import com.amazonaws.services.timestreamwrite.model.ConflictException;
 import com.amazonaws.services.timestreamwrite.model.CreateDatabaseRequest;
 import com.amazonaws.services.timestreamwrite.model.CreateTableRequest;
+import com.amazonaws.services.timestreamwrite.model.CreateTableResult;
 import com.amazonaws.services.timestreamwrite.model.Database;
 import com.amazonaws.services.timestreamwrite.model.DeleteDatabaseRequest;
 import com.amazonaws.services.timestreamwrite.model.DeleteDatabaseResult;
@@ -23,7 +24,6 @@ import com.amazonaws.services.timestreamwrite.model.ListTablesRequest;
 import com.amazonaws.services.timestreamwrite.model.ListTablesResult;
 import com.amazonaws.services.timestreamwrite.model.MeasureValueType;
 import com.amazonaws.services.timestreamwrite.model.Record;
-import com.amazonaws.services.timestreamwrite.model.RejectedRecord;
 import com.amazonaws.services.timestreamwrite.model.RejectedRecordsException;
 import com.amazonaws.services.timestreamwrite.model.ResourceNotFoundException;
 import com.amazonaws.services.timestreamwrite.model.RetentionProperties;
@@ -39,8 +39,8 @@ import static com.amazonaws.services.timestream.Main.DATABASE_NAME;
 import static com.amazonaws.services.timestream.Main.TABLE_NAME;
 
 public class CrudAndSimpleIngestionExample {
-    public static final long HT_TTL_HOURS = 24L;
-    public static final long CT_TTL_DAYS = 7L;
+    public static final long HT_TTL_HOURS = 2550L;
+    public static final long CT_TTL_DAYS = 1L;
 
     AmazonTimestreamWrite amazonTimestreamWrite;
 
@@ -109,10 +109,10 @@ public class CrudAndSimpleIngestionExample {
         createTableRequest.setRetentionProperties(retentionProperties);
 
         try {
-            amazonTimestreamWrite.createTable(createTableRequest);
-            System.out.println("Table [" + TABLE_NAME + "] successfully created.");
+            CreateTableResult table = amazonTimestreamWrite.createTable(createTableRequest);
+            System.out.println("Table [" + TABLE_NAME + "] successfully created. " + table);
         } catch (ConflictException e) {
-            System.out.println("Table [" + TABLE_NAME + "] exists on database [" + DATABASE_NAME + "] . Skipping database creation");
+            System.out.println("Table [" + TABLE_NAME + "] exists in database [" + DATABASE_NAME + "] . Skipping table creation");
         }
     }
 

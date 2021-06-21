@@ -10,4 +10,7 @@ public class InputArguments {
     @Option(name = "--kmsId", aliases = "-k", usage = "kmsId for update")
     public String kmsId;
 
+    @Option(name = "--threadCount", aliases = "-t", usage = "thread count for concurrency")
+    public int threadCount;
+
 }

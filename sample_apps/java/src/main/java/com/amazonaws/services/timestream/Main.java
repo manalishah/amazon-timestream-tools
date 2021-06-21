@@ -1,27 +1,29 @@
 package com.amazonaws.services.timestream;
 
+import java.io.IOException;
+
+import org.kohsuke.args4j.CmdLineException;
+import org.kohsuke.args4j.CmdLineParser;
+
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.services.timestreamquery.AmazonTimestreamQuery;
 import com.amazonaws.services.timestreamquery.AmazonTimestreamQueryClient;
 import com.amazonaws.services.timestreamwrite.AmazonTimestreamWrite;
 import com.amazonaws.services.timestreamwrite.AmazonTimestreamWriteClientBuilder;
 
-import org.kohsuke.args4j.CmdLineException;
-import org.kohsuke.args4j.CmdLineParser;
-
-import java.io.IOException;
-
 public class Main {
-    public static final String DATABASE_NAME = "devops";
-    public static final String TABLE_NAME = "host_metrics";
+    public static final String DATABASE_NAME = "benchmark";
+    public static final String TABLE_NAME = "java";
+    public static final int DEFAULT_THREADS = 500;
 
     public static void main(String[] args) throws IOException {
         InputArguments inputArguments = parseArguments(args);
         AmazonTimestreamWrite writeClient = buildWriteClient();
         final AmazonTimestreamQuery queryClient = buildQueryClient();
+        int threadCount = inputArguments.threadCount != 0 ? inputArguments.threadCount : DEFAULT_THREADS;
 
         CrudAndSimpleIngestionExample crudAndSimpleIngestionExample = new CrudAndSimpleIngestionExample(writeClient);
-        CsvIngestionExample csvIngestionExample = new CsvIngestionExample(writeClient);
+        CsvIngestionExample csvIngestionExample = new CsvIngestionExample(writeClient, threadCount);
         QueryExample queryExample = new QueryExample(queryClient);
 
         crudAndSimpleIngestionExample.createDatabase();
@@ -30,20 +32,7 @@ public class Main {
             crudAndSimpleIngestionExample.updateDatabase(inputArguments.kmsId);
             crudAndSimpleIngestionExample.describeDatabase();
         }
-        crudAndSimpleIngestionExample.listDatabases();
-
-
         crudAndSimpleIngestionExample.createTable();
-        crudAndSimpleIngestionExample.describeTable();
-        crudAndSimpleIngestionExample.listTables();
-        crudAndSimpleIngestionExample.updateTable();
-
-        // simple record ingestion
-        crudAndSimpleIngestionExample.writeRecords();
-        crudAndSimpleIngestionExample.writeRecordsWithCommonAttributes();
-
-        // upsert records
-        crudAndSimpleIngestionExample.writeRecordsWithUpsert();
 
         if (inputArguments.inputFile != null) {
             // Bulk record ingestion for bootstrapping a table with fresh data
@@ -51,16 +40,16 @@ public class Main {
         }
 
         // Query samples
-        queryExample.runAllQueries();
+//        queryExample.runAllQueries();
 
         // Try cancelling a query
-        queryExample.cancelQuery();
+//        queryExample.cancelQuery();
 
         // Run a query with Multiple pages
-        queryExample.runQueryWithMultiplePages(20000);
+//        queryExample.runQueryWithMultiplePages(20000);
 
         // Cleanup commented out
-        // crudAndSimpleIngestionExample.deleteTable();
+         //crudAndSimpleIngestionExample.deleteTable();
         // crudAndSimpleIngestionExample.deleteDatabase();
 
         System.exit(0);
@@ -97,7 +86,7 @@ public class Main {
 
         return AmazonTimestreamWriteClientBuilder
                 .standard()
-                .withRegion("us-east-1")
+                .withRegion("us-west-2")
                 .withClientConfiguration(clientConfiguration)
                 .build();
     }
