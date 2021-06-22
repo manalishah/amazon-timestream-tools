@@ -5,14 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/timestreamquery"
 	"github.com/aws/aws-sdk-go/service/timestreamwrite"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -39,7 +40,6 @@ func main() {
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			KeepAlive: 30 * time.Second,
-			DualStack: true,
 			Timeout:   30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:          100,
@@ -49,21 +49,20 @@ func main() {
 	}
 
 	// So client makes HTTP/2 requests
-	http2.ConfigureTransport(tr)
+	err := http2.ConfigureTransport(tr)
+	if err != nil {
+		return
+	}
 
-	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1"), MaxRetries: aws.Int(10), HTTPClient: &http.Client{Transport: tr}})
-	writeSvc := timestreamwrite.New(sess)
+	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-west-2"), MaxRetries: aws.Int(10), HTTPClient: &http.Client{Transport: tr}})
+	var writeSvc = timestreamwrite.New(sess)
 
-	// setup the query client
-	sessQuery, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
-	querySvc := timestreamquery.New(sessQuery)
-
-	databaseName := flag.String("database_name", "devops", "database name string")
-	tableName := flag.String("table_name", "host_metrics", "table name string")
+	databaseName := flag.String("database_name", "benchmark", "database name string")
+	tableName := flag.String("table_name", "goSdk", "table name string")
 	testFileName := flag.String("test_file", "../data/sample.csv", "CSV file containing the data to ingest")
+	maxGoRoutinesCount := flag.Int("max_go_routines", 25, "Max go routines to ingest data.")
 
 	flag.Parse()
-
 	// Describe database.
 	describeDatabaseInput := &timestreamwrite.DescribeDatabaseInput{
 		DatabaseName: aws.String(*databaseName),
@@ -75,8 +74,8 @@ func main() {
 		fmt.Println("Error:")
 		fmt.Println(err)
 		// Create database if database doesn't exist.
-		serr, ok := err.(*timestreamwrite.ResourceNotFoundException)
-		fmt.Println(serr)
+		e, ok := err.(*timestreamwrite.ResourceNotFoundException)
+		fmt.Println(e)
 		if ok {
 			fmt.Println("Creating database")
 			createDatabaseInput := &timestreamwrite.CreateDatabaseInput{
@@ -105,8 +104,8 @@ func main() {
 	if err != nil {
 		fmt.Println("Error:")
 		fmt.Println(err)
-		serr, ok := err.(*timestreamwrite.ResourceNotFoundException)
-		fmt.Println(serr)
+		e, ok := err.(*timestreamwrite.ResourceNotFoundException)
+		fmt.Println(e)
 		if ok {
 			// Create table if table doesn't exist.
 			fmt.Println("Creating the table")
@@ -126,7 +125,7 @@ func main() {
 		fmt.Println(describeTableOutput)
 	}
 
-	csvfile, err := os.Open(*testFileName)
+	csvFile, err := os.Open(*testFileName)
 	records := make([]*timestreamwrite.Record, 0)
 	if err != nil {
 		fmt.Println("Couldn't open the csv file", err)
@@ -136,7 +135,9 @@ func main() {
 	currentTimeInMilliSeconds := time.Now().UnixNano() / int64(time.Millisecond)
 	// Counter for number of records.
 	counter := int64(0)
-	reader := csv.NewReader(csvfile)
+	reader := csv.NewReader(csvFile)
+	requestSize := 100000
+	var requestBatches []*timestreamwrite.WriteRecordsInput
 	// Iterate through the records
 	for {
 		// Read each record from csv
@@ -149,15 +150,15 @@ func main() {
 		}
 		records = append(records, &timestreamwrite.Record{
 			Dimensions: []*timestreamwrite.Dimension{
-				&timestreamwrite.Dimension{
+				{
 					Name:  aws.String(record[0]),
 					Value: aws.String(record[1]),
 				},
-				&timestreamwrite.Dimension{
+				{
 					Name:  aws.String(record[2]),
 					Value: aws.String(record[3]),
 				},
-				&timestreamwrite.Dimension{
+				{
 					Name:  aws.String(record[4]),
 					Value: aws.String(record[5]),
 				},
@@ -177,29 +178,75 @@ func main() {
 				TableName:    aws.String(*tableName),
 				Records:      records,
 			}
-			_, err = writeSvc.WriteRecords(writeRecordsInput)
-
-			if err != nil {
-				fmt.Println("Error:")
-				fmt.Println(err)
-			} else {
-				fmt.Print("Ingested ", counter)
-				fmt.Println(" records to the table.")
+			requestBatches = append(requestBatches, writeRecordsInput)
+			if requestSize == len(requestBatches) {
+				break
 			}
 			records = make([]*timestreamwrite.Record, 0)
 		}
 	}
 
-	queryInput := &timestreamquery.QueryInput{
-		QueryString: aws.String("select count(*) from " + *databaseName + "." + *tableName),
+	// For the duration of X min, keep ingesting the same records with updated version.
+	for end := time.Now().Add(time.Minute * 10); ; {
+		Write(requestBatches, *maxGoRoutinesCount, writeSvc)
+		if time.Now().After(end) {
+			break
+		}
+		currentTimeInMilliSeconds = time.Now().UnixNano() / int64(time.Millisecond)
+		for i := range requestBatches {
+			requestBatches[i].CommonAttributes = &timestreamwrite.Record{Version: aws.Int64(time.Now().UnixNano())}
+		}
 	}
-	// execute the query
-	query, err := querySvc.Query(queryInput)
+
+}
+
+func Write(requestBatches []*timestreamwrite.WriteRecordsInput, maxWriteJobs int, writeSvc *timestreamwrite.TimestreamWrite) {
+	numberOfWriteRecordsInputs := len(requestBatches)
+
+	if numberOfWriteRecordsInputs < maxWriteJobs {
+		maxWriteJobs = numberOfWriteRecordsInputs
+	}
+
+	var wg sync.WaitGroup
+	writeJobs := make(chan *timestreamwrite.WriteRecordsInput, maxWriteJobs)
+
+	start := time.Now()
+	var failed, ingested = 0, 0
+	for i := 0; i < maxWriteJobs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for writeJob := range writeJobs {
+				if err := writeToTimestream(writeJob, writeSvc); err != 0 {
+					failed += err
+				} else {
+					ingested += len(writeJob.Records)
+				}
+			}
+		}()
+	}
+
+	for i := range requestBatches {
+		writeJobs <- requestBatches[i]
+	}
+	// Close channel once all jobs are added
+	close(writeJobs)
+
+	wg.Wait()
+	elapsed := time.Now().Sub(start)
+
+	fmt.Printf("Records ingested: [%d]  rejected [%v] time(ms): [%v]\n", ingested, failed, elapsed.Milliseconds())
+}
+
+func writeToTimestream(writeRecordsInput *timestreamwrite.WriteRecordsInput, writeSvc *timestreamwrite.TimestreamWrite) int {
+	_, err := writeSvc.WriteRecords(writeRecordsInput)
 
 	if err != nil {
-		fmt.Println("Error:")
-		fmt.Println(err)
-	} else {
-		fmt.Println(query)
+		if _, ok := err.(awserr.Error); ok {
+			return len(writeRecordsInput.Records)
+		}
+
 	}
+	return 0
 }
+
