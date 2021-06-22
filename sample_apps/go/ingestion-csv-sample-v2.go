@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite/types"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/timestreamwrite"
 	"io"
 	"log"
 	"net"
@@ -53,8 +55,7 @@ func main() {
 	*  - Set SDK retry count to 10.
 	*  - Use SDK DEFAULT_BACKOFF_STRATEGY
 	*  - Request timeout of 20 seconds
-	 */
-
+	*/
 	// Setting 20 seconds for timeout
 	tr := &http.Transport{
 		ResponseHeaderTimeout: 20 * time.Second,
@@ -76,36 +77,53 @@ func main() {
 		return
 	}
 
-	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-west-2"), MaxRetries: aws.Int(10), HTTPClient: &http.Client{Transport: tr}})
-	var writeSvc = timestreamwrite.New(sess)
+	customResolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
+		if service == timestreamwrite.ServiceID && region == "us-west-2" {
+			return aws.Endpoint{
+				PartitionID:   "aws",
+				URL:           "https://ingest-cell1.timestream.us-west-2.amazonaws.com",
+				SigningRegion: "us-west-2",
+			}, nil
+		}
+		return aws.Endpoint{}, fmt.Errorf("unknown endpoint requested")
+	})
+	// Use the SDK's default configuration.
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithEndpointResolver(customResolver))
+	if err != nil {
+		panic("unable to load SDK config, " + err.Error())
+	}
+	// Create an Amazon timestreamwrite client.
+	var writeSvc = timestreamwrite.NewFromConfig(cfg)
+
 
 
 	// Describe database.
 	describeDatabaseInput := &timestreamwrite.DescribeDatabaseInput{
-		DatabaseName: aws.String(*databaseName),
+		DatabaseName: databaseName,
 	}
 
-	describeDatabaseOutput, err := writeSvc.DescribeDatabase(describeDatabaseInput)
+	describeDatabaseOutput, err := writeSvc.DescribeDatabase(context.TODO(), describeDatabaseInput)
 
 	if err != nil {
 		fmt.Println("Error:")
 		fmt.Println(err)
 		// Create database if database doesn't exist.
-		e, ok := err.(*timestreamwrite.ResourceNotFoundException)
+		e, ok := err.(*types.ResourceNotFoundException)
 		fmt.Println(e)
 		if ok {
 			fmt.Println("Creating database")
 			createDatabaseInput := &timestreamwrite.CreateDatabaseInput{
-				DatabaseName: aws.String(*databaseName),
+				DatabaseName: databaseName,
 			}
 
-			_, err = writeSvc.CreateDatabase(createDatabaseInput)
+			_, err = writeSvc.CreateDatabase(context.TODO(), createDatabaseInput)
 
 			if err != nil {
 				fmt.Println("Error:")
 				fmt.Println(err)
 			}
 		}
+
 	} else {
 		fmt.Println("Database exists")
 		fmt.Println(describeDatabaseOutput)
@@ -113,24 +131,24 @@ func main() {
 
 	// Describe table.
 	describeTableInput := &timestreamwrite.DescribeTableInput{
-		DatabaseName: aws.String(*databaseName),
-		TableName:    aws.String(*tableName),
+		DatabaseName: databaseName,
+		TableName:    tableName,
 	}
-	describeTableOutput, err := writeSvc.DescribeTable(describeTableInput)
+	describeTableOutput, err := writeSvc.DescribeTable(context.TODO(), describeTableInput)
 
 	if err != nil {
 		fmt.Println("Error:")
 		fmt.Println(err)
-		e, ok := err.(*timestreamwrite.ResourceNotFoundException)
+		e, ok := err.(*types.ResourceNotFoundException)
 		fmt.Println(e)
 		if ok {
 			// Create table if table doesn't exist.
 			fmt.Println("Creating the table")
 			createTableInput := &timestreamwrite.CreateTableInput{
-				DatabaseName: aws.String(*databaseName),
-				TableName:    aws.String(*tableName),
+				DatabaseName: databaseName,
+				TableName:    tableName,
 			}
-			_, err = writeSvc.CreateTable(createTableInput)
+			_, err = writeSvc.CreateTable(context.TODO(), createTableInput)
 
 			if err != nil {
 				fmt.Println("Error:")
@@ -143,13 +161,14 @@ func main() {
 	}
 
 	csvFile, err := os.Open(*testFileName)
-	records := make([]*timestreamwrite.Record, 0)
+	records := make([]types.Record, 0)
 	if err != nil {
 		fmt.Println("Couldn't open the csv file", err)
 	}
 
 	// Get current time in nano seconds.
 	currentTimeInMilliSeconds := time.Now().UnixNano() / int64(time.Millisecond)
+	print(currentTimeInMilliSeconds)
 	// Counter for number of records.
 	counter := int64(0)
 	reader := csv.NewReader(csvFile)
@@ -165,59 +184,64 @@ func main() {
 		if err != nil {
 			fmt.Println(err)
 		}
-		records = append(records, &timestreamwrite.Record{
-			Dimensions: []*timestreamwrite.Dimension{
+		timestamp := strconv.FormatInt(currentTimeInMilliSeconds-counter*int64(50), 10)
+		records = append(records, types.Record{
+			Dimensions: []types.Dimension{
 				{
-					Name:  aws.String(record[0]),
-					Value: aws.String(record[1]),
+					Name:  &record[0],
+					Value: &record[1],
 				},
 				{
-					Name:  aws.String(record[2]),
-					Value: aws.String(record[3]),
+					Name:  &record[2],
+					Value: &record[3],
 				},
 				{
-					Name:  aws.String(record[4]),
-					Value: aws.String(record[5]),
+					Name:  &record[4],
+					Value: &record[5],
 				},
 			},
-			MeasureName:      aws.String(record[6]),
-			MeasureValue:     aws.String(record[7]),
-			MeasureValueType: aws.String(record[8]),
-			Time:             aws.String(strconv.FormatInt(currentTimeInMilliSeconds-counter*int64(50), 10)),
-			TimeUnit:         aws.String("MILLISECONDS"),
+			MeasureName:      &record[6],
+			MeasureValue:     &record[7],
+			MeasureValueType: types.MeasureValueType(record[8]),
+			Time:             &timestamp,
+			TimeUnit:         types.TimeUnitMilliseconds,
+			Version:          0,
 		})
 
 		counter++
 		// WriteRecordsRequest has 100 records limit per request.
 		if counter%100 == 0 {
 			writeRecordsInput := &timestreamwrite.WriteRecordsInput{
-				DatabaseName: aws.String(*databaseName),
-				TableName:    aws.String(*tableName),
+				DatabaseName: databaseName,
+				TableName:    tableName,
 				Records:      records,
 			}
 			requestBatches = append(requestBatches, writeRecordsInput)
 			if requestSize == len(requestBatches) {
 				break
 			}
-			records = make([]*timestreamwrite.Record, 0)
+			records = make([]types.Record, 0)
 		}
 	}
 
 	// For the duration of X min, keep ingesting the same records with updated version.
 	for end := time.Now().Add(time.Minute * 10); ; {
-		Write(requestBatches, *maxGoRoutinesCount, writeSvc)
+		WriteV2(
+			requestBatches,
+			*maxGoRoutinesCount,
+			writeSvc,
+		)
 		if time.Now().After(end) {
 			break
 		}
-		currentTimeInMilliSeconds = time.Now().UnixNano() / int64(time.Millisecond)
 		for i := range requestBatches {
-			requestBatches[i].CommonAttributes = &timestreamwrite.Record{Version: aws.Int64(time.Now().UnixNano())}
+			requestBatches[i].CommonAttributes = &types.Record{Version: time.Now().UnixNano()}
 		}
 	}
 
 }
 
-func Write(requestBatches []*timestreamwrite.WriteRecordsInput, maxWriteJobs int, writeSvc *timestreamwrite.TimestreamWrite) {
+func WriteV2(requestBatches []*timestreamwrite.WriteRecordsInput, maxWriteJobs int, writeSvc *timestreamwrite.Client) {
 	numberOfWriteRecordsInputs := len(requestBatches)
 
 	if numberOfWriteRecordsInputs < maxWriteJobs {
@@ -234,7 +258,7 @@ func Write(requestBatches []*timestreamwrite.WriteRecordsInput, maxWriteJobs int
 		go func() {
 			defer wg.Done()
 			for writeJob := range writeJobs {
-				if err := writeToTimestream(writeJob, writeSvc); err != 0 {
+				if err := writeToTimestreamV2(writeJob, writeSvc); err != 0 {
 					failed += err
 				} else {
 					ingested += len(writeJob.Records)
@@ -255,8 +279,8 @@ func Write(requestBatches []*timestreamwrite.WriteRecordsInput, maxWriteJobs int
 	fmt.Printf("Records ingested: [%d]  rejected [%v] time(ms): [%v]\n", ingested, failed, elapsed.Milliseconds())
 }
 
-func writeToTimestream(writeRecordsInput *timestreamwrite.WriteRecordsInput, writeSvc *timestreamwrite.TimestreamWrite) int {
-	_, err := writeSvc.WriteRecords(writeRecordsInput)
+func writeToTimestreamV2(writeRecordsInput *timestreamwrite.WriteRecordsInput, writeSvc *timestreamwrite.Client) int {
+	_, err :=  writeSvc.WriteRecords(context.TODO(), writeRecordsInput)
 
 	if err != nil {
 		if _, ok := err.(awserr.Error); ok {
