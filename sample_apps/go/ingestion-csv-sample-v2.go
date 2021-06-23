@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite"
 	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite/types"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"io"
 	"log"
 	"net"
@@ -30,7 +30,7 @@ import (
 */
 func main() {
 
-	databaseName := flag.String("database_name", "benchmark", "database name string")
+	databaseName := flag.String("database_name", "benchmark3", "database name string")
 	tableName := flag.String("table_name", "goSdk", "table name string")
 	testFileName := flag.String("test_file", "../data/sample.csv", "CSV file containing the data to ingest")
 	maxGoRoutinesCount := flag.Int("max_go_routines", 25, "Max go routines to ingest data.")
@@ -108,9 +108,9 @@ func main() {
 		fmt.Println("Error:")
 		fmt.Println(err)
 		// Create database if database doesn't exist.
-		e, ok := err.(*types.ResourceNotFoundException)
-		fmt.Println(e)
-		if ok {
+		var re *types.ResourceNotFoundException
+		if errors.As(err, &re) {
+
 			fmt.Println("Creating database")
 			createDatabaseInput := &timestreamwrite.CreateDatabaseInput{
 				DatabaseName: databaseName,
@@ -122,11 +122,12 @@ func main() {
 				fmt.Println("Error:")
 				fmt.Println(err)
 			}
+
 		}
 
 	} else {
 		fmt.Println("Database exists")
-		fmt.Println(describeDatabaseOutput)
+		fmt.Println(*describeDatabaseOutput)
 	}
 
 	// Describe table.
@@ -139,9 +140,8 @@ func main() {
 	if err != nil {
 		fmt.Println("Error:")
 		fmt.Println(err)
-		e, ok := err.(*types.ResourceNotFoundException)
-		fmt.Println(e)
-		if ok {
+		var re *types.ResourceNotFoundException
+		if errors.As(err, &re) {
 			// Create table if table doesn't exist.
 			fmt.Println("Creating the table")
 			createTableInput := &timestreamwrite.CreateTableInput{
@@ -157,7 +157,7 @@ func main() {
 		}
 	} else {
 		fmt.Println("Table exists")
-		fmt.Println(describeTableOutput)
+		fmt.Println(*describeTableOutput.Table)
 	}
 
 	csvFile, err := os.Open(*testFileName)
@@ -283,11 +283,9 @@ func writeToTimestreamV2(writeRecordsInput *timestreamwrite.WriteRecordsInput, w
 	_, err :=  writeSvc.WriteRecords(context.TODO(), writeRecordsInput)
 
 	if err != nil {
-		if _, ok := err.(awserr.Error); ok {
-			return len(writeRecordsInput.Records)
-		}
-
+		return len(writeRecordsInput.Records)
 	}
+
 	return 0
 }
 
